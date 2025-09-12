@@ -55,7 +55,6 @@ class Couple():
         U = block_diag(*([np.array([[1, -1], [1, 1]])]*num_blocks))
 
         C_reduced = np.linalg.inv(U.T) @ C_matrix @ np.linalg.inv(U)
-        qubits = [name.split('_')[0] for name in selected[::2]]
 
         # Inverse of reduced capacitance matrix
         C_inv = np.linalg.inv(C_reduced)[::2, ::2]
@@ -168,11 +167,8 @@ class Couple():
     def get_readout_g(self, EJ, fr):
         e = 1.60217657e-19  # electron charge
         h = 6.62606957e-34  # Planck's constant
-
-        names = [name for name in self.C.columns if name.endswith('_L')]
-        qubits = [name.split('_')[0] for name in names]
         G = []
-        for q in qubits:
+        for q in self.qubit_list:
             if f"{q}_read" not in self.C.columns:
                 continue
             selected = [f"{q}_read", f"{q}_L", f"{q}_R"]
@@ -180,7 +176,7 @@ class Couple():
             # Cr = 0.5 * np.pi / (2*np.pi * fr) / 50 * 1e6 #For lambda/2 resonator (fF)
 
             C_matrix = self.C.loc[selected, selected].to_numpy()
-            C_matrix[0, 0] += C.loc[f"{q}_read", "GND"] + Cr # Add resonator capacitance to ground
+            C_matrix[0, 0] += self.C.loc[f"{q}_read", "GND"] + Cr # Add resonator capacitance to ground
 
             U = block_diag(*([1] + [np.array([[1, -1], [1, 1]])]))
             C_transform = np.linalg.inv(U.T) @ C_matrix @ np.linalg.inv(U)
