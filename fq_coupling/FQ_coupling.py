@@ -1,14 +1,9 @@
 import numpy as np
 import pandas as pd
 import qutip as qt
-import matplotlib.pyplot as plt
 import math
 from io import StringIO
 from scipy.linalg import block_diag
-plt.rcParams["mathtext.fontset"] = "stix"
-plt.rcParams['font.family'] = "STIXGeneral"
-plt.rcParams['font.size'] = 12
-
 
 # Calculate coupling strength g_ij between floating transmons qubits from capacitance matrix
 # Reference: http://dx.doi.org/10.1103/PhysRevApplied.15.064063 (APPENDIX B)
@@ -204,20 +199,3 @@ class Couple():
             G.append(g)
         return np.array(G)
         
-
-if __name__ == '__main__':
-    system = Couple("2FQ1FC-H_q3d.csv")
-    EJc_list = np.linspace(5, 15, 20)
-    fc_list = []
-    zz_list = []
-    Eig = []
-    
-    for EJc in EJc_list:
-        freq, g_ij, Ec, zeta = system.calculate_freq_and_gij(np.array([EJc, 17.39, 15.40]))
-        fc_list.append(freq[0])
-        zz_list.append(system.get_zz(np.array([EJc, 17.39, 15.40]), 1, 2) * 1e3)
-    plt.figure()
-    plt.plot(fc_list, zz_list)
-    plt.xlabel("$\omega_c / 2\pi$ (GHz)")
-    plt.ylabel("zz (MHz)")
-    plt.show()
