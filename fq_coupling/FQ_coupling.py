@@ -4,6 +4,7 @@ import qutip as qt
 import math
 from io import StringIO
 from scipy.linalg import block_diag
+from scipy.optimize import root_scalar
 
 # Calculate coupling strength g_ij between floating transmons qubits from capacitance matrix
 # Reference: http://dx.doi.org/10.1103/PhysRevApplied.15.064063 (APPENDIX B)
@@ -78,6 +79,16 @@ class Couple():
     def get_freq(self, EJ):
         _, omega = self._get_zeta_omega(EJ)
         return omega
+    
+    def solve_EJ(self, freq):
+        '''Reversely solve for EJ for given qubit frequency, `freq` in GHz'''
+        EJ_sol = []
+        for i in range(self.Nq):
+            def func(Ej):
+                EJ = np.array([Ej if k == i else 15 for k in range(self.Nq)])
+                return self.get_freq(EJ)[i] - freq[i]
+            EJ_sol.append(root_scalar(func, bracket=[5, 30])['root'])
+        return np.array(EJ_sol)
     
     def get_anharmonicity(self, EJ):
         '''Calculate anharmonicity using formula (B19) in PhysRevApplied.15.064063, `EJ` in GHz'''
@@ -191,9 +202,6 @@ class Couple():
         zz = (E_101 - E_001) - (E_100 - E_000)
         return zz
 
-    # Return two data frames:
-    #    df_1q:  single qubit properties
-    #    df_gij: coupling strength between qubits (in MHz)
     def calculate_all(self, EJ):
         '''
         Return two data frames:\n
