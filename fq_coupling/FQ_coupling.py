@@ -15,7 +15,7 @@ from scipy.optimize import root_scalar
 
 class Couple():
     '''Read capacitance matrix to initialize (csv file), note that the unit of capacitance must be fF'''
-    def __init__(self, filename):
+    def __init__(self, filename, fr=6.0, quarter=True):
         with open(filename, "r") as f:
             lines = f.readlines()
 
@@ -42,31 +42,65 @@ class Couple():
         if not table_lines:
             raise ValueError("Capacitance Matrix block not found in file.")
 
-        # Define class variables (should be read only)
+        # Get capacitance matrix
         self.C = pd.read_csv(StringIO("\n".join(table_lines)), index_col=0)
+        # Pre-process to get rid of the stray capacitance to infinity
+        for i in range(self.C.shape[0]):
+            self.C.iloc[i, i] -= np.sum(self.C.iloc[i, :])
+        # Replace C_{read, gnd} by Cr (capacitance of resonator)
+        if quarter:
+            Cr = 0.25 * np.pi / (2*np.pi * fr) / 50 * 1e6 # For lambda/4 resonator (fF)
+        else:
+            Cr = 0.5 * np.pi / (2*np.pi * fr) / 50 * 1e6 # For lambda/2 resonator (fF)
+        for i in range(self.C.shape[0]):
+            if self.C.index[i].endswith('_read'):
+                self.C.loc[i, i] += self.C.loc[self.C.index[i], "GND"] + Cr # Add resonator capacitance to ground
+        
+        # Define class variables (should be read only)
+        self.fr, self.Cr = fr, Cr
         self.qubit_list = [name.split('_')[0] for name in self.C.columns if name.endswith('_L')]
         self.Nq = len(self.qubit_list)
-        self.EC_matrix = self._get_Ec_matrix()
+        self.EC_matrix, self.EC_readout = self._get_Ec_matrix()
         self.EC = self.EC_matrix.diagonal()
     
     # Calculate Ec matrix from capacitance matrix, eliminating the redundant degree of freedom
     def _get_Ec_matrix(self):
         e = 1.60217657e-19  # electron charge
         h = 6.62606957e-34  # Plank's constant
-        # Only keep columns and rows with names ending in '_L' or '_R'
-        selected = [name for name in self.C.columns if name.endswith('_L') or name.endswith('_R')]
+        # Only keep columns and rows with names ending in '_L' (left pad of floating qubit) or '_R' (right pad of floating qubit)
+        # or '_read' (readout resonator coupling pad) or '_I' (floating island of single-ended qubit)
+        selected = [name for name in self.C.columns if name.endswith('_L') or name.endswith('_R') or name.endswith('_read') or name.endswith('_I')]
         C_matrix = self.C.loc[selected, selected].to_numpy()
 
         # Transfrom capacitance matrix to remove the redundant DOF
-        num_blocks = C_matrix.shape[0] // 2
-        U = block_diag(*([np.array([[1, -1], [1, 1]])]*num_blocks))
+        blocks = []
+        for i in range(len(selected)):
+            if selected[i].endswith('_L'):
+                blocks.append(np.array([[1, -1], [1, 1]])) # transform: (L, R) = (L-R, L+R). Then, we'll drop R (L+R) to remove the redundant DOF
+            elif selected[i].endswith('_read') or selected[i].endswith('_I'):
+                blocks.append(np.array([[1]]))
+            #elif selected[i].endswith('_R'): -> do nothing
+        U = block_diag(*(blocks))
 
-        C_reduced = np.linalg.inv(U.T) @ C_matrix @ np.linalg.inv(U)
+        C_matrix = np.linalg.inv(U.T) @ C_matrix @ np.linalg.inv(U)
 
         # Inverse of reduced capacitance matrix
-        C_inv = np.linalg.inv(C_reduced)[::2, ::2]
-        EC_matrix = e**2 / (2 * h) * C_inv * 1e6 # Ec in GHz, C in fF
-        return EC_matrix
+        reduced = np.array([i for i in range(len(selected)) if selected[i].endswith('_L') or selected[i].endswith('_I')])
+        assert len(reduced) == self.Nq, "Size of EC_matrix wrong!! Please check the naming convention of capacitance matrix."
+        C_inv = np.linalg.inv(C_matrix)
+        EC_matrix = e**2 / (2 * h) * C_inv[reduced, :][:, reduced] * 1e6 # Ec in GHz, C in fF
+
+        # For readout coupling strength
+        EC_readout = []
+        for i in reduced:
+            read_tag = selected[i].split('_')[0] + 'read'
+            if read_tag in selected:
+                EC_readout.append(C_inv[selected.index(read_tag), i])
+            else:
+                EC_readout.append(0)
+        EC_readout = e**2 / (2 * h) * np.array(EC_readout)
+
+        return EC_matrix, EC_readout
     
     
     def _get_zeta_omega(self, EJ):
@@ -75,10 +109,12 @@ class Couple():
         omega = np.sqrt(8 * EJ * self.EC) - self.EC * (1 + zeta / 4)
         return zeta, omega
     
-    # Calculate qubit frequency (to be improved later)
+    # Should I add dispersive shift (due to other qubit or resonator) as well?
     def get_freq(self, EJ):
-        _, omega = self._get_zeta_omega(EJ)
-        return omega
+        '''Calculate qubit frequency using formula (B19) in PhysRevApplied.15.064063, `EJ` in GHz'''
+        zeta, omega = self._get_zeta_omega(EJ)
+        freq = omega - 5 * self.EC * zeta / 32
+        return freq
     
     def solve_EJ(self, freq):
         '''Reversely solve for EJ for given qubit frequency, `freq` in GHz'''
@@ -110,6 +146,15 @@ class Couple():
                   #                                                                  ^
 
         return g_ij
+    
+    def get_grq(self, EJ):
+        '''Calculate qubit-resonator coupling strength by generalizing get_gij(), `EJ` in GHz'''
+        e = 1.60217657e-19  # electron charge
+        h = 6.62606957e-34  # Plank's constant
+        zeta, _ = self._get_zeta_omega(EJ)
+        g_rq = self.EC_readout / 2**0.5 * (EJ / self.EC)**0.25 * (self.fr**2 / 2 / (e**2 / self.Cr / h * 1e6)**2)**0.25 * (1 - zeta / 8)
+        g_rq *= 2 # see get_gij() for details
+        return g_rq
 
     def _Hamiltonian_fast(self, EJ, dim=3):
         '''
@@ -210,9 +255,10 @@ class Couple():
         '''
         freq = self.get_freq(EJ)
         anharmonicity = self.get_anharmonicity(EJ)
+        g_rq = self.get_grq(EJ)
         g_ij = self.get_gij(EJ)
 
-        df_1q = pd.DataFrame(np.transpose([self.EC * 1e3, EJ, freq, anharmonicity * 1e3]), index=self.qubit_list, columns=['EC (MHz)', 'EJ (GHz)', 'Frequency (GHz)', 'Anharmonicity (MHz)'])
+        df_1q = pd.DataFrame(np.transpose([self.EC * 1e3, EJ, freq, anharmonicity * 1e3, g_rq * 1e3]), index=self.qubit_list, columns=['EC (MHz)', 'EJ (GHz)', 'Frequency (GHz)', 'Anharmonicity (MHz)', 'g_rq (MHz)'])
         df_gij = pd.DataFrame(g_ij * 1e3, index=self.qubit_list, columns=self.qubit_list)
         return df_1q, df_gij
 
