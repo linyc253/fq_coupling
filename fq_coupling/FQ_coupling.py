@@ -13,6 +13,7 @@ from scipy.linalg import block_diag
 # where Q* represents qubit, and C* represents coupler
 
 class Couple():
+    # Read capacitanc matrix to initialize (csv file)
     def __init__(self, filename):
         with open(filename, "r") as f:
             lines = f.readlines()
@@ -20,6 +21,7 @@ class Couple():
         capture = False
         table_lines = []
 
+        # Locate capacitance matrix
         for line in lines:
             line = line.strip()
             if not line:
@@ -39,11 +41,14 @@ class Couple():
         if not table_lines:
             raise ValueError("Capacitance Matrix block not found in file.")
 
+        # Define class variables (should be read only)
         self.C = pd.read_csv(StringIO("\n".join(table_lines)), index_col=0)
         self.qubit_list = [name.split('_')[0] for name in self.C.columns if name.endswith('_L')]
         self.Nq = len(self.qubit_list)
+        self.EC_matrix = self._get_Ec_matrix()
+        self.EC = self.EC_matrix.diagonal()
     
-    def get_Ec_matrix(self):
+    def _get_Ec_matrix(self):
         e = 1.60217657e-19  # electron charge
         h = 6.62606957e-34  # Plank's constant
         # Only keep columns and rows with names ending in '_L' or '_R'
@@ -58,38 +63,52 @@ class Couple():
 
         # Inverse of reduced capacitance matrix
         C_inv = np.linalg.inv(C_reduced)[::2, ::2]
-        Ec_matrix = e**2 / (2 * h) * C_inv * 1e6 # Ec in GHz, C in fF
-        return Ec_matrix
+        EC_matrix = e**2 / (2 * h) * C_inv * 1e6 # Ec in GHz, C in fF
+        return EC_matrix
+    
+    
+    # Formula (B20) in PhysRevApplied.15.064063
+    def _get_zeta_omega(self, EJ):
+        zeta = (2*self.EC / EJ)**0.5
+        omega = np.sqrt(8 * EJ * self.EC) - self.EC * (1 + zeta / 4)
+        return zeta, omega
+    
+    # Calculate qubit frequency (to be improved later)
+    def get_freq(self, EJ):
+        _, omega = self._get_zeta_omega(EJ)
+        return omega
+    
+    # Calculate anharmonicity using formula (B19) in PhysRevApplied.15.064063
+    def get_anharmonicity(self, EJ):
+        zeta, _ = self._get_zeta_omega(EJ)
+        anharmonicity = -self.EC * (1 + 9 * zeta / 16)
+        return anharmonicity
+    
+    # Calculate coupling strength g_ij using formula (B21) in PhysRevApplied.15.064063
+    def get_gij(self, EJ): # EJ in GHz      
+        zeta, _ = self._get_zeta_omega(EJ)
 
-    def calculate_freq_and_gij(self, EJ, print_result=False): # EJ in GHz
-        Ec_matrix = self.get_Ec_matrix()
-        
-        # Calculate qubit frequencies
-        Ec = Ec_matrix.diagonal()
-        zeta = (2*Ec / EJ)**0.5
-        freq = np.sqrt(8 * EJ * Ec) - Ec * (1 + zeta / 4)
+        g_ij = self.EC_matrix / 2**0.5 * ((EJ / self.EC)**0.25)[:, None] * ((EJ / self.EC)**0.25)[None, :] * (1 - zeta[:, None] / 8 - zeta[None, :] / 8)
 
-
-        # Calculate coupling strengths
-        g_ij = Ec_matrix / 2**0.5 * ((EJ / Ec)**0.25)[:, None] * ((EJ / Ec)**0.25)[None, :] * (1 - zeta[:, None] / 8 - zeta[None, :] / 8)
+        # Set lower-left of the matrix as zero, and scale upper-right by two
         for i in range(self.Nq):
-            g_ij[i, i] = 0
-        g_ij *= 2 # (Q1 Q2) * g_ij * (Q1 Q2)^T = g_11 * Q1^2 + g_22 * Q2^2 + 2*g_12*Q1*Q2
+            for j in range(i+1):
+                g_ij[i, j] = 0
+        g_ij *= 2 # because (n1 n2) * g_ij * (n1 n2)^T = g_11 * n1^2 + g_22 * n2^2 + 2*g_12*n1*n2
+                  #                                                                  ^
 
-        if print_result:
-            print(pd.DataFrame(np.transpose([Ec * 1e3, freq]), index=self.qubit, columns=['Ec (MHz)', 'Frequency (GHz)']))
-            print("\nCoupling strengths g_ij (MHz):")
-            print(pd.DataFrame(g_ij * 1e3, index=self.qubit, columns=self.qubit))
+        return g_ij
 
-        return freq, g_ij, Ec, zeta
-
-    def Hamiltonian_fast(self, EJ, dim=3):
-        freq, g_ij, Ec, zeta = self.calculate_freq_and_gij(EJ)
-
+    # Construct 3-level Hamiltonian using formula (B19) in PhysRevApplied.15.064063
+    # Faster but slightly less accurate than Hamiltonian(), especially when it comes to zz-interaction
+    def _Hamiltonian_fast(self, EJ, dim=3):
+        g_ij = self.get_gij(EJ)
+        zeta, omega = self._get_zeta_omega(EJ)
+    
         H = 0
         # \sum_i \omega_i (a^dagger a) + Ec_i/2 (1 + zeta_i/4 - (1 + 9*zeta_i/16) a^dagger a) a^dagger a
         for i in range(self.Nq):
-            H_sub = (freq[i] + Ec[i] / 2 * ((1 + zeta[i] / 4) - (1 + 9 * zeta[i] / 16) * qt.num(dim))) * qt.num(dim)
+            H_sub = (omega[i] + self.EC[i] / 2 * ((1 + zeta[i] / 4) - (1 + 9 * zeta[i] / 16) * qt.num(dim))) * qt.num(dim)
             H += qt.tensor([H_sub if j == i else qt.qeye(dim) for j in range(self.Nq)])
         
         # \sum_{i<j} -g_ij (a^dagger - a)(b^dagger - b)
@@ -97,46 +116,49 @@ class Couple():
             for j in range(i+1, self.Nq):
                 H -= g_ij[i, j] * qt.tensor([ (qt.create(dim) - qt.destroy(dim)) if k == i else (qt.create(dim) - qt.destroy(dim)) if k == j else qt.qeye(dim) for k in range(self.Nq)])
         return H, dim
-
-    def Hamiltonian(self, EJ, dim=10):
-        Ec_matrix = self.get_Ec_matrix()
-
-        Ec = Ec_matrix.diagonal()
-
-        # Construct Hamiltonian
-        n_ZPF = 0.5**0.5 * (EJ / Ec / 8)**0.25
+    
+    # Construct Hamiltonian from cQED textbook, user can increase 'dim' for higher accuracy
+    def _Hamiltonian(self, EJ, dim=10):
+        n_ZPF = 0.5**0.5 * (EJ / self.EC / 8)**0.25
         n_hat = []
         for i in range(self.Nq):
             n_hat.append(qt.tensor([1j * n_ZPF[i] * (qt.create(dim) - qt.destroy(dim)) if j == i else qt.qeye(dim) for j in range(self.Nq)]))
 
-        phi_ZPF = 0.5**0.5 * (8 * Ec / EJ)**0.25
+        phi_ZPF = 0.5**0.5 * (8 * self.EC / EJ)**0.25
         phi_hat = []
         for i in range(self.Nq):
             phi_hat.append(qt.tensor([phi_ZPF[i] * (qt.create(dim) + qt.destroy(dim)) if j == i else qt.qeye(dim) for j in range(self.Nq)]))
 
         H = 0
+        # Kinetic terms
         for i in range(self.Nq): 
             for j in range(self.Nq):
-                H += 4 * Ec_matrix[i, j] * n_hat[i] * n_hat[j]
+                H += 4 * self.EC_matrix[i, j] * n_hat[i] * n_hat[j]
+        # Expand cosine by Taylor series
         for i in range(self.Nq):
             for n in range(dim):
                 H -= EJ[i] * (-1)**n * phi_hat[i]**(2*n) / math.factorial(2*n)
         return H, dim
 
+    # Calculate eigenvalues of Hamiltonian
     def get_eig(self, EJ, fast=True):
         if fast:
-            H, dim = self.Hamiltonian_fast(EJ)
+            H, _ = self._Hamiltonian_fast(EJ)
         else:
-            H, dim = self.Hamiltonian(EJ)
+            H, _ = self._Hamiltonian(EJ)
         eigenvalues = H.eigenenergies()
         return eigenvalues
 
+    # Calculate the zz-interaction between q0(int) and q1(int)
+    # You can check the index by printing the qubit list: `self.qubit_list`
     def get_zz(self, EJ, q0, q1, fast=False):
         if fast:
-            H, dim = self.Hamiltonian_fast(EJ)
+            H, dim = self._Hamiltonian_fast(EJ)
         else:
-            H, dim = self.Hamiltonian(EJ)
+            H, dim = self._Hamiltonian(EJ)
         eigenvalues, eigenstates = H.eigenstates()
+
+        # Identify the states by projection
         g = qt.basis(dim, 0)
         e = qt.basis(dim, 1)
 
@@ -164,7 +186,39 @@ class Couple():
         zz = (E_101 - E_001) - (E_100 - E_000)
         return zz
 
-    def get_readout_g(self, EJ, fr):
+    # Return two data frames:
+    #    df_1q:  single qubit properties
+    #    df_gij: coupling strength between qubits (in MHz)
+    def calculate_all(self, EJ):
+        freq = self.get_freq(EJ)
+        anharmonicity = self.get_anharmonicity(EJ)
+        g_ij = self.get_gij(EJ)
+
+        df_1q = pd.DataFrame(np.transpose([self.EC * 1e3, EJ, freq, anharmonicity * 1e3]), index=self.qubit_list, columns=['EC (MHz)', 'EJ (GHz)', 'Frequency (GHz)', 'Anharmonicity (MHz)'])
+        df_gij = pd.DataFrame(g_ij * 1e3, index=self.qubit_list, columns=self.qubit_list)
+        return df_1q, df_gij
+
+    # Legacy code
+    def calculate_freq_and_gij(self, EJ, print_result=False): # EJ in GHz      
+        # Calculate qubit frequencies
+        zeta = (2*self.EC / EJ)**0.5
+        freq = np.sqrt(8 * EJ * self.EC) - self.EC * (1 + zeta / 4)
+
+
+        # Calculate coupling strengths
+        g_ij = self.EC_matrix / 2**0.5 * ((EJ / self.EC)**0.25)[:, None] * ((EJ / self.EC)**0.25)[None, :] * (1 - zeta[:, None] / 8 - zeta[None, :] / 8)
+        for i in range(self.Nq):
+            g_ij[i, i] = 0
+        g_ij *= 2 # (Q1 Q2) * g_ij * (Q1 Q2)^T = g_11 * Q1^2 + g_22 * Q2^2 + 2*g_12*Q1*Q2
+
+        if print_result:
+            print(pd.DataFrame(np.transpose([self.EC * 1e3, freq]), index=self.qubit_list, columns=['Ec (MHz)', 'Frequency (GHz)']))
+            print("\nCoupling strengths g_ij (MHz):")
+            print(pd.DataFrame(g_ij * 1e3, index=self.qubit_list, columns=self.qubit_list))
+
+        return freq, g_ij, self.EC, zeta
+    
+    def get_readout_g(self, EJ, fr, quarter=True):
         e = 1.60217657e-19  # electron charge
         h = 6.62606957e-34  # Planck's constant
         G = []
@@ -172,8 +226,10 @@ class Couple():
             if f"{q}_read" not in self.C.columns:
                 continue
             selected = [f"{q}_read", f"{q}_L", f"{q}_R"]
-            Cr = 0.25 * np.pi / (2*np.pi * fr) / 50 * 1e6 #For lambda/4 resonator (fF)
-            # Cr = 0.5 * np.pi / (2*np.pi * fr) / 50 * 1e6 #For lambda/2 resonator (fF)
+            if quarter:
+                Cr = 0.25 * np.pi / (2*np.pi * fr) / 50 * 1e6 # For lambda/4 resonator (fF)
+            else:
+                Cr = 0.5 * np.pi / (2*np.pi * fr) / 50 * 1e6 # For lambda/2 resonator (fF)
 
             C_matrix = self.C.loc[selected, selected].to_numpy()
             C_matrix[0, 0] += self.C.loc[f"{q}_read", "GND"] + Cr # Add resonator capacitance to ground
