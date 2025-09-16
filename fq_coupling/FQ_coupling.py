@@ -13,7 +13,7 @@ from scipy.linalg import block_diag
 # where Q* represents qubit, and C* represents coupler
 
 class Couple():
-    # Read capacitanc matrix to initialize (csv file)
+    '''Read capacitance matrix to initialize (csv file), note that the unit of capacitance must be fF'''
     def __init__(self, filename):
         with open(filename, "r") as f:
             lines = f.readlines()
@@ -48,6 +48,7 @@ class Couple():
         self.EC_matrix = self._get_Ec_matrix()
         self.EC = self.EC_matrix.diagonal()
     
+    # Calculate Ec matrix from capacitance matrix, eliminating the redundant degree of freedom
     def _get_Ec_matrix(self):
         e = 1.60217657e-19  # electron charge
         h = 6.62606957e-34  # Plank's constant
@@ -67,8 +68,8 @@ class Couple():
         return EC_matrix
     
     
-    # Formula (B20) in PhysRevApplied.15.064063
     def _get_zeta_omega(self, EJ):
+        '''Formula (B20) in PhysRevApplied.15.064063'''
         zeta = (2*self.EC / EJ)**0.5
         omega = np.sqrt(8 * EJ * self.EC) - self.EC * (1 + zeta / 4)
         return zeta, omega
@@ -78,14 +79,14 @@ class Couple():
         _, omega = self._get_zeta_omega(EJ)
         return omega
     
-    # Calculate anharmonicity using formula (B19) in PhysRevApplied.15.064063
     def get_anharmonicity(self, EJ):
+        '''Calculate anharmonicity using formula (B19) in PhysRevApplied.15.064063, `EJ` in GHz'''
         zeta, _ = self._get_zeta_omega(EJ)
         anharmonicity = -self.EC * (1 + 9 * zeta / 16)
         return anharmonicity
     
-    # Calculate coupling strength g_ij using formula (B21) in PhysRevApplied.15.064063
-    def get_gij(self, EJ): # EJ in GHz      
+    def get_gij(self, EJ):
+        '''Calculate coupling strength g_ij using formula (B21) in PhysRevApplied.15.064063, `EJ` in GHz'''    
         zeta, _ = self._get_zeta_omega(EJ)
 
         g_ij = self.EC_matrix / 2**0.5 * ((EJ / self.EC)**0.25)[:, None] * ((EJ / self.EC)**0.25)[None, :] * (1 - zeta[:, None] / 8 - zeta[None, :] / 8)
@@ -99,9 +100,11 @@ class Couple():
 
         return g_ij
 
-    # Construct 3-level Hamiltonian using formula (B19) in PhysRevApplied.15.064063
-    # Faster but slightly less accurate than Hamiltonian(), especially when it comes to zz-interaction
     def _Hamiltonian_fast(self, EJ, dim=3):
+        '''
+        Construct 3-level Hamiltonian using formula (B19) in PhysRevApplied.15.064063, `EJ` in GHz\n
+        Faster but slightly less accurate than Hamiltonian(), especially when it comes to zz-interaction
+        '''
         g_ij = self.get_gij(EJ)
         zeta, omega = self._get_zeta_omega(EJ)
     
@@ -117,8 +120,8 @@ class Couple():
                 H -= g_ij[i, j] * qt.tensor([ (qt.create(dim) - qt.destroy(dim)) if k == i else (qt.create(dim) - qt.destroy(dim)) if k == j else qt.qeye(dim) for k in range(self.Nq)])
         return H, dim
     
-    # Construct Hamiltonian from cQED textbook, user can increase 'dim' for higher accuracy
     def _Hamiltonian(self, EJ, dim=10):
+        '''Construct Hamiltonian from cQED textbook, user can increase `dim` for higher accuracy, `EJ` in GHz'''
         n_ZPF = 0.5**0.5 * (EJ / self.EC / 8)**0.25
         n_hat = []
         for i in range(self.Nq):
@@ -140,8 +143,8 @@ class Couple():
                 H -= EJ[i] * (-1)**n * phi_hat[i]**(2*n) / math.factorial(2*n)
         return H, dim
 
-    # Calculate eigenvalues of Hamiltonian
     def get_eig(self, EJ, fast=True):
+        '''Calculate eigenvalues of Hamiltonian, `EJ` in GHz'''
         if fast:
             H, _ = self._Hamiltonian_fast(EJ)
         else:
@@ -149,9 +152,11 @@ class Couple():
         eigenvalues = H.eigenenergies()
         return eigenvalues
 
-    # Calculate the zz-interaction between q0(int) and q1(int)
-    # You can check the index by printing the qubit list: `self.qubit_list`
-    def get_zz(self, EJ, q0, q1, fast=False):
+    def get_zz(self, EJ, q0: int, q1: int, fast=False):
+        '''
+        Calculate the zz-interaction between `q0` and `q1`, with `EJ` in GHz\n
+        You can check the index by printing the qubit list: `self.qubit_list`
+        '''
         if fast:
             H, dim = self._Hamiltonian_fast(EJ)
         else:
@@ -190,6 +195,11 @@ class Couple():
     #    df_1q:  single qubit properties
     #    df_gij: coupling strength between qubits (in MHz)
     def calculate_all(self, EJ):
+        '''
+        Return two data frames:\n
+            df_1q:  single qubit properties\n
+            df_gij: coupling strength between qubits (in MHz)
+        '''
         freq = self.get_freq(EJ)
         anharmonicity = self.get_anharmonicity(EJ)
         g_ij = self.get_gij(EJ)
@@ -198,7 +208,7 @@ class Couple():
         df_gij = pd.DataFrame(g_ij * 1e3, index=self.qubit_list, columns=self.qubit_list)
         return df_1q, df_gij
 
-    # Legacy code
+    ### Legacy code ###
     def calculate_freq_and_gij(self, EJ, print_result=False): # EJ in GHz      
         # Calculate qubit frequencies
         zeta = (2*self.EC / EJ)**0.5
