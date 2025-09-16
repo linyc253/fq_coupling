@@ -54,7 +54,7 @@ class Couple():
             Cr = 0.5 * np.pi / (2*np.pi * fr) / 50 * 1e6 # For lambda/2 resonator (fF)
         for i in range(self.C.shape[0]):
             if self.C.index[i].endswith('_read'):
-                self.C.loc[i, i] += self.C.loc[self.C.index[i], "GND"] + Cr # Add resonator capacitance to ground
+                self.C.iloc[i, i] += self.C.loc[self.C.index[i], "GND"] + Cr # Add resonator capacitance to ground
         
         # Define class variables (should be read only)
         self.fr, self.Cr = fr, Cr
@@ -93,12 +93,12 @@ class Couple():
         # For readout coupling strength
         EC_readout = []
         for i in reduced:
-            read_tag = selected[i].split('_')[0] + 'read'
+            read_tag = selected[i].split('_')[0] + '_read'
             if read_tag in selected:
                 EC_readout.append(C_inv[selected.index(read_tag), i])
             else:
                 EC_readout.append(0)
-        EC_readout = e**2 / (2 * h) * np.array(EC_readout)
+        EC_readout = e**2 / (2 * h) * np.array(EC_readout) * 1e6 # Ec in GHz, C in fF
 
         return EC_matrix, EC_readout
     
