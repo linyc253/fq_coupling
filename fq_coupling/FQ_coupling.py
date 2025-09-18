@@ -55,12 +55,17 @@ class Couple():
         for i in range(self.C.shape[0]):
             if self.C.index[i].endswith('_read'):
                 self.C.iloc[i, i] += self.C.loc[self.C.index[i], "GND"] + Cr # Add resonator capacitance to ground
+        # Replace C_{xy, gnd} by C_B (very large capacitor)
+        C_B = 1E6
+        for i in range(self.C.shape[0]):
+            if self.C.index[i].endswith('_xy'):
+                self.C.iloc[i, i] += self.C.loc[self.C.index[i], "GND"] + C_B # Add resonator capacitance to ground
         
         # Define class variables (should be read only)
         self.fr, self.Cr = fr, Cr
         self.qubit_list = [name.split('_')[0] for name in self.C.columns if name.endswith('_L')]
         self.Nq = len(self.qubit_list)
-        self.EC_matrix, self.EC_readout = self._get_Ec_matrix()
+        self.EC_matrix, self.EC_readout, self.C_xy = self._get_Ec_matrix()
         self.EC = self.EC_matrix.diagonal()
     
     # Calculate Ec matrix from capacitance matrix, eliminating the redundant degree of freedom
@@ -69,7 +74,7 @@ class Couple():
         h = 6.62606957e-34  # Plank's constant
         # Only keep columns and rows with names ending in '_L' (left pad of floating qubit) or '_R' (right pad of floating qubit)
         # or '_read' (readout resonator coupling pad) or '_I' (floating island of single-ended qubit)
-        selected = [name for name in self.C.columns if name.endswith('_L') or name.endswith('_R') or name.endswith('_read') or name.endswith('_I')]
+        selected = [name for name in self.C.columns if name.endswith('_L') or name.endswith('_R') or name.endswith('_read')  or name.endswith('_xy') or name.endswith('_I')]
         C_matrix = self.C.loc[selected, selected].to_numpy()
 
         # Transfrom capacitance matrix to remove the redundant DOF
@@ -77,7 +82,7 @@ class Couple():
         for i in range(len(selected)):
             if selected[i].endswith('_L'):
                 blocks.append(np.array([[1, -1], [1, 1]])) # transform: (L, R) = (L-R, L+R). Then, we'll drop R (L+R) to remove the redundant DOF
-            elif selected[i].endswith('_read') or selected[i].endswith('_I'):
+            elif selected[i].endswith('_read') or selected[i].endswith('_xy') or selected[i].endswith('_I'):
                 blocks.append(np.array([[1]]))
             #elif selected[i].endswith('_R'): -> do nothing
         U = block_diag(*(blocks))
@@ -100,7 +105,16 @@ class Couple():
                 EC_readout.append(0)
         EC_readout = e**2 / (2 * h) * np.array(EC_readout) * 1e6 # Ec in GHz, C in fF
 
-        return EC_matrix, EC_readout
+        # For xyline coupling strength
+        C_xy = []
+        for i in reduced:
+            xy_tag = selected[i].split('_')[0] + '_xy'
+            if xy_tag in selected:
+                C_xy.append(C_inv[selected.index(xy_tag), i] / C_inv[selected.index(xy_tag), selected.index(xy_tag)] / C_inv[i, i])
+            else:
+                C_xy.append(0)
+
+        return EC_matrix, EC_readout, C_xy
     
     
     def _get_zeta_omega(self, EJ):
@@ -258,7 +272,8 @@ class Couple():
         g_rq = self.get_grq(EJ)
         g_ij = self.get_gij(EJ)
 
-        df_1q = pd.DataFrame(np.transpose([self.EC * 1e3, EJ, freq, anharmonicity * 1e3, g_rq * 1e3]), index=self.qubit_list, columns=['EC (MHz)', 'EJ (GHz)', 'Frequency (GHz)', 'Anharmonicity (MHz)', 'g_rq (MHz)'])
+        df_1q = pd.DataFrame(np.transpose([self.EC * 1e3, EJ, freq, anharmonicity * 1e3, g_rq * 1e3, self.C_xy]), index=self.qubit_list, 
+                             columns=['EC (MHz)', 'EJ (GHz)', 'Frequency (GHz)', 'Anharmonicity (MHz)', 'g_rq (MHz)', 'C_xy (fF)'])
         df_gij = pd.DataFrame(g_ij * 1e3, index=self.qubit_list, columns=self.qubit_list)
         return df_1q, df_gij
 
