@@ -148,7 +148,7 @@ class Couple():
             def func(Ej):
                 EJ = np.array([Ej if k == i else 15 for k in range(self.Nq)])
                 return self.get_freq(EJ)[i] - freq[i]
-            EJ_sol.append(root_scalar(func, bracket=[5, 30])['root'])
+            EJ_sol.append(root_scalar(func, bracket=[0.1, 10000])['root'])
         return np.array(EJ_sol)
     
     def get_anharmonicity(self, EJ):
