@@ -5,6 +5,7 @@ import math
 from io import StringIO
 from scipy.linalg import block_diag
 from scipy.optimize import root_scalar
+import pkg_resources
 
 # Calculate coupling strength g_ij between floating transmons qubits from capacitance matrix
 # Reference: http://dx.doi.org/10.1103/PhysRevApplied.15.064063 (APPENDIX B)
@@ -13,8 +14,11 @@ from scipy.optimize import root_scalar
 # SignalNet: GND, Q0_L (pad1), Q0_R (pad2), Q0_xy (xy line), Q0_read (readout line), C0_L, ......
 # where Q* represents qubit, and C* represents coupler
 
-def capacitance_reader(filename):
+def capacitance_reader(filename, internal_data=False):
     '''Read capacitance matrix to initialize (csv file), note that the unit of capacitance must be fF'''
+    if internal_data:
+        filename = pkg_resources.resource_filename('fq_coupling', 'data/'+filename)
+
     with open(filename, "r") as f:
         lines = f.readlines()
 
@@ -48,8 +52,8 @@ def capacitance_reader(filename):
 
 class Couple():
     '''Read capacitance matrix to initialize (csv file) and pre-process, note that the unit of capacitance must be fF'''
-    def __init__(self, filename, fr=6.0, quarter=True):
-        self.C = capacitance_reader(filename)
+    def __init__(self, filename, internal_data=False, fr=6.0, quarter=True):
+        self.C = capacitance_reader(filename, internal_data)
         
         # Pre-process to get rid of the stray capacitance to infinity
         for i in range(self.C.shape[0]):
