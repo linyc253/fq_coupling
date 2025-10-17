@@ -13,37 +13,44 @@ from scipy.optimize import root_scalar
 # SignalNet: GND, Q0_L (pad1), Q0_R (pad2), Q0_xy (xy line), Q0_read (readout line), C0_L, ......
 # where Q* represents qubit, and C* represents coupler
 
-class Couple():
+def capacitance_reader(filename):
     '''Read capacitance matrix to initialize (csv file), note that the unit of capacitance must be fF'''
+    with open(filename, "r") as f:
+        lines = f.readlines()
+
+    capture = False
+    table_lines = []
+
+    # Locate capacitance matrix
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+
+        if line.startswith("Capacitance Matrix Coupling Coefficient"):
+            break  # stop before the next block
+
+        if line.startswith("Capacitance Matrix"):
+            capture = True
+            continue
+
+        if capture:
+            table_lines.append(line)
+
+    # Parse into DataFrame
+    if not table_lines:
+        raise ValueError("Capacitance Matrix block not found in file.")
+
+    # Get capacitance matrix
+    C = pd.read_csv(StringIO("\n".join(table_lines)), index_col=0)
+    return C
+
+
+class Couple():
+    '''Read capacitance matrix to initialize (csv file) and pre-process, note that the unit of capacitance must be fF'''
     def __init__(self, filename, fr=6.0, quarter=True):
-        with open(filename, "r") as f:
-            lines = f.readlines()
-
-        capture = False
-        table_lines = []
-
-        # Locate capacitance matrix
-        for line in lines:
-            line = line.strip()
-            if not line:
-                continue
-
-            if line.startswith("Capacitance Matrix Coupling Coefficient"):
-                break  # stop before the next block
-
-            if line.startswith("Capacitance Matrix"):
-                capture = True
-                continue
-
-            if capture:
-                table_lines.append(line)
-
-        # Parse into DataFrame
-        if not table_lines:
-            raise ValueError("Capacitance Matrix block not found in file.")
-
-        # Get capacitance matrix
-        self.C = pd.read_csv(StringIO("\n".join(table_lines)), index_col=0)
+        self.C = capacitance_reader(filename)
+        
         # Pre-process to get rid of the stray capacitance to infinity
         for i in range(self.C.shape[0]):
             self.C.iloc[i, i] -= np.sum(self.C.iloc[i, :])
