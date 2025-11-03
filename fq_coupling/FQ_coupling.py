@@ -52,9 +52,8 @@ def capacitance_reader(filename, internal_data=False):
 
 class Couple():
     '''Read capacitance matrix to initialize (csv file) and pre-process, note that the unit of capacitance must be fF'''
-    def __init__(self, filename, internal_data=False, fr=6.0, quarter=True, Cr_prefactor=1.0):
-        
-        self.C = capacitance_reader(filename, internal_data) *Cr_prefactor
+    def __init__(self, filename, internal_data=False, fr=6.0, quarter=True):
+        self.C = capacitance_reader(filename, internal_data)
         
         # Pre-process to get rid of the stray capacitance to infinity
         for i in range(self.C.shape[0]):
