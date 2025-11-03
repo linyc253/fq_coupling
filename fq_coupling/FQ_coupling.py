@@ -52,9 +52,9 @@ def capacitance_reader(filename, internal_data=False):
 
 class Couple():
     '''Read capacitance matrix to initialize (csv file) and pre-process, note that the unit of capacitance must be fF'''
-    def __init__(self, filename, internal_data=False, fr=6.0, quarter=True):
-        self.C = capacitance_reader(filename, internal_data)
-        
+    def __init__(self, filename, internal_data=False, fr=6.0, quarter=True, C_prefactor=1):
+        self.c_prefactor = C_prefactor # You can scale the capacitance matrix by this prefactor if needed, similar to modifying the dielectric constant in Q3D
+        self.C = capacitance_reader(filename, internal_data) *C_prefactor
         # Pre-process to get rid of the stray capacitance to infinity
         for i in range(self.C.shape[0]):
             self.C.iloc[i, i] -= np.sum(self.C.iloc[i, :])
