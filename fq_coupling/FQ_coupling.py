@@ -258,7 +258,7 @@ class Couple():
         overlap_100 = []
         overlap_101 = []
 
-        for ii in range(dim*self.Nq):
+        for ii in range(dim**self.Nq):
             overlap_000.append(abs(s000.dag()*eigenstates[ii])) 
             overlap_001.append(abs(s001.dag()*eigenstates[ii]))
             overlap_100.append(abs(s100.dag()*eigenstates[ii]))
