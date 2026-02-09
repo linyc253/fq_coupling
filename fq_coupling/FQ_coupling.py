@@ -6,6 +6,7 @@ from io import StringIO
 from scipy.linalg import block_diag
 from scipy.optimize import root_scalar
 import pkg_resources
+import re
 
 # Calculate coupling strength g_ij between floating transmons qubits from capacitance matrix
 # Reference: http://dx.doi.org/10.1103/PhysRevApplied.15.064063 (APPENDIX B)
@@ -47,6 +48,9 @@ def capacitance_reader(filename, internal_data=False):
 
     # Get capacitance matrix
     C = pd.read_csv(StringIO("\n".join(table_lines)), index_col=0)
+    if len(C.columns) == len(C.index) + 1:
+        C.drop(C.columns[-1], axis=1, inplace=True) # Drop last column
+    assert np.array_equal(C.index, C.columns), "BUG: columns and rows index does not match"
     return C
 
 
@@ -74,7 +78,7 @@ class Couple():
         
         # Define class variables (should be read only)
         self.fr, self.Cr = fr, Cr
-        self.qubit_list = [name.split('_')[0] for name in self.C.columns if name.endswith('_L')]
+        self.qubit_list = [name.split('_')[0] for name in self.C.columns if name.endswith('_L') or name.endswith('_I')]
         self.Nq = len(self.qubit_list)
         self.EC_matrix, self.EC_readout, self.C_xy = self._get_Ec_matrix()
         self.EC = self.EC_matrix.diagonal()
@@ -83,9 +87,13 @@ class Couple():
     def _get_Ec_matrix(self):
         e = 1.60217657e-19  # electron charge
         h = 6.62606957e-34  # Plank's constant
-        # Only keep columns and rows with names ending in '_L' (left pad of floating qubit) or '_R' (right pad of floating qubit)
-        # or '_read' (readout resonator coupling pad) or '_I' (floating island of single-ended qubit)
-        selected = [name for name in self.C.columns if name.endswith('_L') or name.endswith('_R') or name.endswith('_read')  or name.endswith('_xy') or name.endswith('_I')]
+        # Check whether all columns and rows end with '_L' (left pad of floating qubit) or '_R' (right pad of floating qubit)
+        # or '_read' (readout resonator coupling pad) or '_I' (floating island of single-ended qubit) or '_B(number)' (other floating bus)
+        for name in self.C.columns:
+            assert name.endswith(('_L', '_R', '_read', '_xy', '_I')) or re.search(r'_B\d+$', name) or name=="GND",\
+                   "Labels should be either 'GND' or end with '_L', '_R', '_read', '_xy', '_I', or '_B(number)'"
+        # Remove GND column/row (if present)
+        selected = [name for name in self.C.columns if name!="GND"]
         C_matrix = self.C.loc[selected, selected].to_numpy()
 
         # Transfrom capacitance matrix to remove the redundant DOF
@@ -93,16 +101,17 @@ class Couple():
         for i in range(len(selected)):
             if selected[i].endswith('_L'):
                 blocks.append(np.array([[1, -1], [1, 1]])) # transform: (L, R) = (L-R, L+R). Then, we'll drop R (L+R) to remove the redundant DOF
-            elif selected[i].endswith('_read') or selected[i].endswith('_xy') or selected[i].endswith('_I'):
+            elif selected[i].endswith('_R'):
+                pass # -> do nothing
+            else:
                 blocks.append(np.array([[1]]))
-            #elif selected[i].endswith('_R'): -> do nothing
         U = block_diag(*(blocks))
 
         C_matrix = np.linalg.inv(U.T) @ C_matrix @ np.linalg.inv(U)
 
-        # Inverse of reduced capacitance matrix
+        # Inverse the capacitance matrix, then remove non-qubit DOF
         reduced = np.array([i for i in range(len(selected)) if selected[i].endswith('_L') or selected[i].endswith('_I')])
-        assert len(reduced) == self.Nq, "Size of EC_matrix wrong!! Please check the naming convention of capacitance matrix."
+        assert len(reduced) == self.Nq, "BUG: Size of EC_matrix wrong!!"
         C_inv = np.linalg.inv(C_matrix)
         EC_matrix = e**2 / (2 * h) * C_inv[reduced, :][:, reduced] * 1e6 # Ec in GHz, C in fF
 
