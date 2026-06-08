@@ -278,21 +278,12 @@ class Couple():
         s100 = qt.tensor([e if i == q1 else g for i in range(self.Nq)])
         s101 = qt.tensor([e if i == q0 or i == q1 else g for i in range(self.Nq)])
 
-        overlap_000 = []
-        overlap_001 = []
-        overlap_100 = []
-        overlap_101 = []
-
-        for ii in range(dim**self.Nq):
-            overlap_000.append(abs(s000.dag()*eigenstates[ii])) 
-            overlap_001.append(abs(s001.dag()*eigenstates[ii]))
-            overlap_100.append(abs(s100.dag()*eigenstates[ii]))
-            overlap_101.append(abs(s101.dag()*eigenstates[ii]))
         
-        E_000 = eigenvalues[np.argmax(np.array(overlap_000))]
-        E_001 = eigenvalues[np.argmax(np.array(overlap_001))]
-        E_100 = eigenvalues[np.argmax(np.array(overlap_100))]
-        E_101 = eigenvalues[np.argmax(np.array(overlap_101))]
+        E_000 = eigenvalues[self._max_overlap_index(eigenstates, s000)]
+        E_001 = eigenvalues[self._max_overlap_index(eigenstates, s001)]
+        E_100 = eigenvalues[self._max_overlap_index(eigenstates, s100)]
+        E_101 = eigenvalues[self._max_overlap_index(eigenstates, s101)]
+        
 
         zz = (E_101 - E_001) - (E_100 - E_000)
         return zz
