@@ -232,6 +232,14 @@ class Couple():
             for n in range(dim):
                 H -= EJ[i] * (-1)**n * phi_hat[i]**(2*n) / math.factorial(2*n)
         return H, dim
+    
+    def _n_hat(self, EJ, dim):
+        '''Return a list of n_hat operator for each qubit'''
+        n_ZPF = 0.5**0.5 * (EJ / self.EC / 8)**0.25
+        n_hat = []
+        for i in range(self.Nq):
+            n_hat.append(qt.tensor([1j * n_ZPF[i] * (qt.create(dim) - qt.destroy(dim)) if j == i else qt.qeye(dim) for j in range(self.Nq)]))
+        return n_hat
 
     def get_eig(self, EJ, fast=True):
         '''Calculate eigenvalues of Hamiltonian, `EJ` in GHz'''
@@ -241,6 +249,14 @@ class Couple():
             H, _ = self._Hamiltonian(EJ)
         eigenvalues = H.eigenenergies()
         return eigenvalues
+    
+    def _max_overlap_index(self, states, s):
+        '''Calculate |<`s`|`si`>| for each `si` in `states`, and return the index of `si` with maximal overlap'''
+        overlap = []
+        for i in range(np.size(states)):
+            overlap.append(abs(s.dag()*states[i]))
+        return np.argmax(np.array(overlap))
+
 
     def get_zz(self, EJ, q0: int, q1: int, fast=False):
         '''
@@ -280,6 +296,74 @@ class Couple():
 
         zz = (E_101 - E_001) - (E_100 - E_000)
         return zz
+
+    def get_epr(self, EJ, q: int, dress=False, fast=False):
+        '''
+        Calculate the epr of `q`, with `EJ` in GHz\n
+        `dress=False` use bare state to calculate epr\n
+        `dress=True` use dress state to calculate epr\n
+        You can check the index by printing the qubit list: `self.qubit_list`
+        '''
+        if fast:
+            H, dim = self._Hamiltonian_fast(EJ)
+        else:
+            H, dim = self._Hamiltonian(EJ)
+        n_hat = self._n_hat(EJ, dim)
+
+        g = qt.basis(dim, 0)
+        e = qt.basis(dim, 1)
+        vac = qt.tensor([g for i in range(self.Nq)]) # vacuum state
+        s = qt.tensor([e if i == q else g for i in range(self.Nq)]) # bare s
+
+        if dress:
+            eigenvalues, eigenstates = H.eigenstates()
+            vac = eigenstates[self._max_overlap_index(eigenstates, vac)] # Replace bare vac with dress vac
+            s = eigenstates[self._max_overlap_index(eigenstates, s)] # Replace bare s with dress s
+        
+        # Calculate epr based on n_q
+        C_matrix = self.C.to_numpy()
+        C_inv = np.linalg.inv(C_matrix)
+
+        q = 0
+        n_hat_full = [] # in terms of original capacitance matrix
+        for name in self.C.columns:
+            if name.endswith('_L'):
+                n_hat_full.append(n_hat[q] / 2**0.5)
+            elif name.endswith('_R'):
+                n_hat_full.append(-n_hat[q] / 2**0.5)
+                q += 1
+            elif name.endswith('_I'):
+                n_hat_full.append(n_hat[q])
+                q += 1
+            else:
+                n_hat_full.append(0)
+        
+        epr = self.C.copy()
+        epr.iloc[:, :] = 0
+        Nc = self.C.shape[0]
+        for i in range(Nc):
+            for j in range(i, Nc):
+                for l in range(Nc):
+                    for m in range(Nc):
+                        epr.iloc[i, j] += -C_matrix[i, j] * (C_inv[i, l] - C_inv[j, l]) * (C_inv[i, m] - C_inv[j, m]) * np.real(s.dag()*n_hat_full[l]*n_hat_full[m]*s)
+                        epr.iloc[i, j] -= -C_matrix[i, j] * (C_inv[i, l] - C_inv[j, l]) * (C_inv[i, m] - C_inv[j, m]) * np.real(vac.dag()*n_hat_full[l]*n_hat_full[m]*vac)
+        
+        e = 1.60217657e-19  # electron charge
+        h = 6.62606957e-34  # Plank's constant
+        epr *= (2*e)**2 / h * 1e6 # Ec in GHz, C in fF
+
+        # Check total energy by summing epr and U
+        phi_ZPF = 0.5**0.5 * (8 * self.EC / EJ)**0.25
+        phi_hat = []
+        for i in range(self.Nq):
+            phi_hat.append(qt.tensor([phi_ZPF[i] * (qt.create(dim) + qt.destroy(dim)) if j == i else qt.qeye(dim) for j in range(self.Nq)]))
+        U = 0
+        for i in range(self.Nq):
+            for n in range(dim):
+                U -= EJ[i] * (-1)**n * phi_hat[i]**(2*n) / math.factorial(2*n)
+        print("fq = sum(epr) + <U> = ", np.sum(epr.to_numpy())+qt.expect(U, s)-qt.expect(U, vac), "GHz")
+
+        return epr
 
     def calculate_all(self, EJ):
         '''
