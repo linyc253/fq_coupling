@@ -172,10 +172,10 @@ class Couple():
 
         g_ij = self.EC_matrix / 2**0.5 * ((EJ / self.EC)**0.25)[:, None] * ((EJ / self.EC)**0.25)[None, :] * (1 - zeta[:, None] / 8 - zeta[None, :] / 8)
 
-        # Set lower-left of the matrix as zero, and scale upper-right by two
+        # Set lower-left of the matrix as NaN, and scale upper-right by two
         for i in range(self.Nq):
             for j in range(i+1):
-                g_ij[i, j] = 0
+                g_ij[i, j] = np.nan
         g_ij *= 2 # because (n1 n2) * g_ij * (n1 n2)^T = g_11 * n1^2 + g_22 * n2^2 + 2*g_12*n1*n2
                   #                                                                  ^
 
@@ -333,7 +333,7 @@ class Couple():
         epr.iloc[:, :] = 0
         Nc = self.C.shape[0]
         for i in range(Nc):
-            for j in range(i, Nc):
+            for j in range(i+1, Nc):
                 for l in range(Nc):
                     for m in range(Nc):
                         epr.iloc[i, j] += -C_matrix[i, j] * (C_inv[i, l] - C_inv[j, l]) * (C_inv[i, m] - C_inv[j, m]) * np.real(s.dag()*n_hat_full[l]*n_hat_full[m]*s)
@@ -354,6 +354,9 @@ class Couple():
                 U -= EJ[i] * (-1)**n * phi_hat[i]**(2*n) / math.factorial(2*n)
         print("fq = sum(epr) + <U> = ", np.sum(epr.to_numpy())+qt.expect(U, s)-qt.expect(U, vac), "GHz")
 
+        for i in range(Nc):
+            for j in range(i+1): 
+                epr.iloc[i, j] = np.nan
         return epr
 
     def calculate_all(self, EJ):
