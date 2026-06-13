@@ -59,9 +59,9 @@ class Couple():
     def __init__(self, filename, internal_data=False, fr=6.0, quarter=True, C_prefactor=1):
         self.c_prefactor = C_prefactor # You can scale the capacitance matrix by this prefactor if needed, similar to modifying the dielectric constant in Q3D
         self.C = capacitance_reader(filename, internal_data) *C_prefactor
-        # Pre-process to get rid of the stray capacitance to infinity
-        for i in range(self.C.shape[0]):
-            self.C.iloc[i, i] -= np.sum(self.C.iloc[i, :])
+        assert "GND" in self.C.columns, "Net 'GND' must exist"
+        gnd_index = self.C.columns.tolist().index("GND")
+        
         # Replace C_{read, gnd} by Cr (capacitance of resonator)
         if quarter:
             Cr = 0.25 * np.pi / (2*np.pi * fr) / 50 * 1e6 # For lambda/4 resonator (fF)
@@ -69,12 +69,16 @@ class Couple():
             Cr = 0.5 * np.pi / (2*np.pi * fr) / 50 * 1e6 # For lambda/2 resonator (fF)
         for i in range(self.C.shape[0]):
             if self.C.index[i].endswith('_read'):
-                self.C.iloc[i, i] += self.C.loc[self.C.index[i], "GND"] + Cr # Add resonator capacitance to ground
+                self.C.iloc[i, gnd_index] = self.C.iloc[gnd_index, i] = -Cr # Add resonator capacitance to ground
         # Replace C_{xy, gnd} by C_B (very large capacitor)
         C_B = 1E6
         for i in range(self.C.shape[0]):
             if self.C.index[i].endswith('_xy'):
-                self.C.iloc[i, i] += self.C.loc[self.C.index[i], "GND"] + C_B # Add resonator capacitance to ground
+                self.C.iloc[i, gnd_index] = self.C.iloc[gnd_index, i] = -C_B # Add C_B to ground
+
+        # Pre-process to get rid of the stray capacitance to infinity
+        for i in range(self.C.shape[0]):
+            self.C.iloc[i, i] -= np.sum(self.C.iloc[i, :])
         
         # Define class variables (should be read only)
         self.fr, self.Cr = fr, Cr
@@ -311,10 +315,15 @@ class Couple():
             vac = eigenstates[self._max_overlap_index(eigenstates, vac)] # Replace bare vac with dress vac
             s = eigenstates[self._max_overlap_index(eigenstates, s)] # Replace bare s with dress s
         
-        # Calculate epr based on n_q
-        C_matrix = self.C.to_numpy()
+        # Construct C_inv (Remove GND first, and put it back later to avoid singular C_matrix (gauge fixed by: V_gnd=0))
+        selected = [name for name in self.C.columns if name!="GND"]
+        C_matrix = self.C.loc[selected, selected].to_numpy()
         C_inv = np.linalg.inv(C_matrix)
+        gnd_index = self.C.columns.tolist().index("GND")
+        C_inv = np.insert(C_inv, gnd_index, 0.0, axis=0)
+        C_inv = np.insert(C_inv, gnd_index, 0.0, axis=1)
 
+        # Construct N_sq matrice
         q = 0
         n_hat_full = [] # in terms of original capacitance matrix
         for name in self.C.columns:
@@ -328,17 +337,28 @@ class Couple():
                 q += 1
             else:
                 n_hat_full.append(0)
-        
-        epr = self.C.copy()
-        epr.iloc[:, :] = 0
         Nc = self.C.shape[0]
-        for i in range(Nc):
-            for j in range(i+1, Nc):
-                for l in range(Nc):
-                    for m in range(Nc):
-                        epr.iloc[i, j] += -C_matrix[i, j] * (C_inv[i, l] - C_inv[j, l]) * (C_inv[i, m] - C_inv[j, m]) * np.real(s.dag()*n_hat_full[l]*n_hat_full[m]*s)
-                        epr.iloc[i, j] -= -C_matrix[i, j] * (C_inv[i, l] - C_inv[j, l]) * (C_inv[i, m] - C_inv[j, m]) * np.real(vac.dag()*n_hat_full[l]*n_hat_full[m]*vac)
+        N_sq_1, N_sq_0 = np.zeros([Nc, Nc]), np.zeros([Nc, Nc])
+        for l in range(Nc):
+            for m in range(Nc):
+                N_sq_1[l, m] = np.real(s.dag() * n_hat_full[l] * n_hat_full[m] * s)
+                N_sq_0[l, m] = np.real(vac.dag() * n_hat_full[l] * n_hat_full[m] * vac)
         
+        # Finally calculate epr:
+        #    epr_{ij} = C_{ij} (V_i - V_j)^2
+        #             = C_{ij} \sum_{lm} (C_inv_{il} - C_inv_{jl}) * (C_inv_{im} - C_inv_{jm}) * <n_{l} * n_{m}>
+        # where C_ij is spice capacitance, n_{l} is the charge operator
+        epr = self.C.copy()
+        for i in range(Nc):
+            for j in range(i+1): 
+                epr.iloc[i, j] = np.nan
+            for j in range(i+1, Nc):
+                delta_C_inv = (C_inv[i, :] - C_inv[j, :])[:, None] * (C_inv[i, :] - C_inv[j, :])[None, :]
+                c_spice = -self.C.iloc[i, j]
+                v_sq_1 = np.sum(delta_C_inv * N_sq_1)
+                v_sq_0 = np.sum(delta_C_inv * N_sq_0)
+                epr.iloc[i, j] = c_spice * v_sq_1 - c_spice * v_sq_0 # substrate the epr of |1> and |0> to remove vacuum energy
+                        
         e = 1.60217657e-19  # electron charge
         h = 6.62606957e-34  # Plank's constant
         epr *= (2*e)**2 / h * 1e6 # Ec in GHz, C in fF
@@ -352,11 +372,8 @@ class Couple():
         for i in range(self.Nq):
             for n in range(dim):
                 U -= EJ[i] * (-1)**n * phi_hat[i]**(2*n) / math.factorial(2*n)
-        print("fq = sum(epr) + <U> = ", np.sum(epr.to_numpy())+qt.expect(U, s)-qt.expect(U, vac), "GHz")
-
-        for i in range(Nc):
-            for j in range(i+1): 
-                epr.iloc[i, j] = np.nan
+        print("fq = sum(epr) + <U> = ", np.nansum(epr.to_numpy())+qt.expect(U, s)-qt.expect(U, vac), "GHz")
+            
         return epr
 
     def calculate_all(self, EJ):
